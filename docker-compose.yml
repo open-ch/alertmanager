@@ -1,0 +1,99 @@
+services:
+  alertmanager-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.alertmanager
+    platform: linux/amd64
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./alertmanager-1.yml:/etc/alertmanager/alertmanager.yml
+      - alertmanager-1-data:/alertmanager
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+      - '--web.listen-address=0.0.0.0:9093'
+      - '--cluster.listen-address=0.0.0.0:9094'
+      - '--cluster.peer=alertmanager-2:9094'
+      - '--cluster.peer=alertmanager-3:9094'
+    networks:
+      - alertmanager
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9093/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  alertmanager-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.alertmanager
+    platform: linux/amd64
+    ports:
+      - "9094:9093"
+    volumes:
+      - ./alertmanager-2.yml:/etc/alertmanager/alertmanager.yml
+      - alertmanager-2-data:/alertmanager
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+      - '--web.listen-address=0.0.0.0:9093'
+      - '--cluster.listen-address=0.0.0.0:9094'
+      - '--cluster.peer=alertmanager-1:9094'
+      - '--cluster.peer=alertmanager-3:9094'
+    networks:
+      - alertmanager
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9093/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  alertmanager-3:
+    build:
+      context: .
+      dockerfile: Dockerfile.alertmanager
+    platform: linux/amd64
+    ports:
+      - "9095:9093"
+    volumes:
+      - ./alertmanager-3.yml:/etc/alertmanager/alertmanager.yml
+      - alertmanager-3-data:/alertmanager
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+      - '--web.listen-address=0.0.0.0:9093'
+      - '--cluster.listen-address=0.0.0.0:9094'
+      - '--cluster.peer=alertmanager-1:9094'
+      - '--cluster.peer=alertmanager-2:9094'
+    networks:
+      - alertmanager
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9093/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  webhook-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.webhook
+    platform: linux/amd64
+    ports:
+      - "5001:5001"
+    networks:
+      - alertmanager
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:5001/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  alertmanager-1-data:
+  alertmanager-2-data:
+  alertmanager-3-data:
+
+networks:
+  alertmanager:
+    driver: bridge

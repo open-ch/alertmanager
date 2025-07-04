@@ -326,7 +326,7 @@ func (s *SQL) SetNotificationEntry(ctx context.Context, entry *nflogpb.MeshEntry
 	
 	entryID := fmt.Sprintf("%s:%s:%d", 
 		string(entry.Entry.GroupKey), 
-		entry.Entry.Receiver, 
+		entry.Entry.Receiver.String(), 
 		entry.Entry.Timestamp.Unix(),
 	)
 	
@@ -353,7 +353,7 @@ func (s *SQL) SetNotificationEntry(ctx context.Context, entry *nflogpb.MeshEntry
 	_, err = s.db.ExecContext(ctx, query,
 		entryID,
 		string(entry.Entry.GroupKey),
-		entry.Entry.Receiver,
+		entry.Entry.Receiver.String(),
 		data,
 		entry.ExpiresAt.UTC(),
 		entry.Entry.Timestamp.UTC(),
@@ -604,7 +604,7 @@ func (tx *sqlTx) SetNotificationEntry(ctx context.Context, entry *nflogpb.MeshEn
     
     entryID := fmt.Sprintf("%s:%s:%d", 
         string(entry.Entry.GroupKey), 
-        entry.Entry.Receiver, 
+        entry.Entry.Receiver.String(), 
         entry.Entry.Timestamp.Unix(),
     )
     
@@ -622,7 +622,7 @@ func (tx *sqlTx) SetNotificationEntry(ctx context.Context, entry *nflogpb.MeshEn
     _, err = tx.tx.ExecContext(ctx, query,
         entryID,
         string(entry.Entry.GroupKey),
-        entry.Entry.Receiver,
+        entry.Entry.Receiver.String(),
         data,
         entry.ExpiresAt.UTC(),
         entry.Entry.Timestamp.UTC(),

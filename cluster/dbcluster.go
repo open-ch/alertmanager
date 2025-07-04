@@ -182,6 +182,14 @@ func (p *DBPeer) Join(reconnectInterval, reconnectTimeout time.Duration) error {
 	go p.syncLoop()
 	go p.cleanupLoop()
 	
+	// Mark as ready immediately for database clustering
+	p.mtx.Lock()
+	if !p.ready {
+		p.ready = true
+		close(p.readyc)
+	}
+	p.mtx.Unlock()
+	
 	p.logger.Info("joined database cluster", "node_id", p.nodeID, "address", p.address)
 	return nil
 }

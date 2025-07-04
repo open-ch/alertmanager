@@ -1,4 +1,20 @@
 services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: alertmanager
+      POSTGRES_USER: alertmanager
+      POSTGRES_PASSWORD: alertmanager_password
+    ports:
+      - "5432:5432"
+    networks:
+      - alertmanager
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U alertmanager -d alertmanager"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   alertmanager-1:
     build:
       context: .
@@ -13,11 +29,17 @@ services:
       - '--config.file=/etc/alertmanager/alertmanager.yml'
       - '--storage.path=/alertmanager'
       - '--web.listen-address=0.0.0.0:9093'
-      - '--cluster.listen-address=0.0.0.0:9094'
-      - '--cluster.peer=alertmanager-2:9094'
-      - '--cluster.peer=alertmanager-3:9094'
+      - '--storage.db.driver=postgres'
+      - '--storage.db.dsn=postgresql://alertmanager:alertmanager_password@postgres:5432/alertmanager?sslmode=disable'
+      - '--storage.db.sync-interval=30s'
+      - '--storage.db.node-timeout=5m'
+      - '--storage.db.max-open-conns=25'
+      - '--storage.db.max-idle-conns=5'
     networks:
       - alertmanager
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9093/-/healthy"]
       interval: 30s
@@ -38,11 +60,17 @@ services:
       - '--config.file=/etc/alertmanager/alertmanager.yml'
       - '--storage.path=/alertmanager'
       - '--web.listen-address=0.0.0.0:9093'
-      - '--cluster.listen-address=0.0.0.0:9094'
-      - '--cluster.peer=alertmanager-1:9094'
-      - '--cluster.peer=alertmanager-3:9094'
+      - '--storage.db.driver=postgres'
+      - '--storage.db.dsn=postgresql://alertmanager:alertmanager_password@postgres:5432/alertmanager?sslmode=disable'
+      - '--storage.db.sync-interval=30s'
+      - '--storage.db.node-timeout=5m'
+      - '--storage.db.max-open-conns=25'
+      - '--storage.db.max-idle-conns=5'
     networks:
       - alertmanager
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9093/-/healthy"]
       interval: 30s
@@ -63,11 +91,17 @@ services:
       - '--config.file=/etc/alertmanager/alertmanager.yml'
       - '--storage.path=/alertmanager'
       - '--web.listen-address=0.0.0.0:9093'
-      - '--cluster.listen-address=0.0.0.0:9094'
-      - '--cluster.peer=alertmanager-1:9094'
-      - '--cluster.peer=alertmanager-2:9094'
+      - '--storage.db.driver=postgres'
+      - '--storage.db.dsn=postgresql://alertmanager:alertmanager_password@postgres:5432/alertmanager?sslmode=disable'
+      - '--storage.db.sync-interval=30s'
+      - '--storage.db.node-timeout=5m'
+      - '--storage.db.max-open-conns=25'
+      - '--storage.db.max-idle-conns=5'
     networks:
       - alertmanager
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9093/-/healthy"]
       interval: 30s

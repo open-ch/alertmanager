@@ -25,7 +25,7 @@ log_error() {
 # Function to start services
 start_services() {
     log_info "Starting Alertmanager cluster and webhook server..."
-    docker compose up -d
+    docker compose up -d --build --force-recreate
     
     log_info "Waiting for services to be ready..."
     sleep 10

@@ -15,13 +15,18 @@ package db
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"time"
 
 	"github.com/gogo/protobuf/proto"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/common/model"
 
 	"github.com/prometheus/alertmanager/nflog/nflogpb"
 	"github.com/prometheus/alertmanager/silence/silencepb"
@@ -141,6 +146,21 @@ func (s *SQL) initSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_notification_entries_timestamp ON notification_entries(timestamp);
 	CREATE INDEX IF NOT EXISTS idx_notification_entries_group_receiver ON notification_entries(group_key, receiver);
 	
+	CREATE TABLE IF NOT EXISTS alerts (
+		fingerprint TEXT PRIMARY KEY,
+		data %s NOT NULL,
+		labels_hash TEXT NOT NULL,
+		starts_at TIMESTAMP NOT NULL,
+		ends_at TIMESTAMP NOT NULL,
+		updated_at TIMESTAMP NOT NULL,
+		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+	
+	CREATE INDEX IF NOT EXISTS idx_alerts_starts_at ON alerts(starts_at);
+	CREATE INDEX IF NOT EXISTS idx_alerts_ends_at ON alerts(ends_at);
+	CREATE INDEX IF NOT EXISTS idx_alerts_updated_at ON alerts(updated_at);
+	CREATE INDEX IF NOT EXISTS idx_alerts_labels_hash ON alerts(labels_hash);
+	
 	CREATE TABLE IF NOT EXISTS cluster_nodes (
 		id TEXT PRIMARY KEY,
 		address TEXT NOT NULL,
@@ -149,7 +169,7 @@ func (s *SQL) initSchema() error {
 	);
 	
 	CREATE INDEX IF NOT EXISTS idx_cluster_nodes_last_seen ON cluster_nodes(last_seen);
-	`, blobType, blobType)
+	`, blobType, blobType, blobType)
 
 	_, err := s.db.Exec(schema)
 	return err
@@ -633,5 +653,210 @@ func (tx *sqlTx) SetNotificationEntry(ctx context.Context, entry *nflogpb.MeshEn
 func (tx *sqlTx) DeleteExpiredNotificationEntries(ctx context.Context, before time.Time) error {
 	query := `DELETE FROM notification_entries WHERE expires_at < $1`
 	_, err := tx.tx.ExecContext(ctx, query, before.UTC())
+	return err
+}
+
+func (tx *sqlTx) GetAlerts(ctx context.Context) ([]*Alert, error) {
+	query := `SELECT data FROM alerts ORDER BY starts_at`
+	rows, err := tx.tx.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	
+	var alerts []*Alert
+	for rows.Next() {
+		var data []byte
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		
+		var alert Alert
+		if err = json.Unmarshal(data, &alert); err != nil {
+			tx.logger.Warn("failed to unmarshal alert", "err", err)
+			continue
+		}
+		
+		alerts = append(alerts, &alert)
+	}
+	
+	return alerts, rows.Err()
+}
+
+func (tx *sqlTx) SetAlert(ctx context.Context, alert *Alert) error {
+	data, err := json.Marshal(alert)
+	if err != nil {
+		return err
+	}
+	
+	labelsHash := generateLabelsHash(alert.Labels)
+	
+	var query string
+	// Note: assuming PostgreSQL since transactions are typically used with PostgreSQL
+	query = `
+	INSERT INTO alerts (fingerprint, data, labels_hash, starts_at, ends_at, updated_at) 
+	VALUES ($1, $2, $3, $4, $5, $6)
+	ON CONFLICT (fingerprint) DO UPDATE SET
+		data = EXCLUDED.data,
+		labels_hash = EXCLUDED.labels_hash,
+		starts_at = LEAST(alerts.starts_at, EXCLUDED.starts_at),
+		ends_at = GREATEST(alerts.ends_at, EXCLUDED.ends_at),
+		updated_at = EXCLUDED.updated_at
+	`
+	
+	_, err = tx.tx.ExecContext(ctx, query, 
+		alert.Fingerprint,
+		data,
+		labelsHash,
+		alert.StartsAt.UTC(), 
+		alert.EndsAt.UTC(),
+		alert.UpdatedAt.UTC(),
+	)
+	return err
+}
+
+func (tx *sqlTx) DeleteAlert(ctx context.Context, fingerprint string) error {
+	query := `DELETE FROM alerts WHERE fingerprint = $1`
+	_, err := tx.tx.ExecContext(ctx, query, fingerprint)
+	return err
+}
+
+func (tx *sqlTx) DeleteExpiredAlerts(ctx context.Context, before time.Time) error {
+	query := `DELETE FROM alerts WHERE ends_at < $1`
+	_, err := tx.tx.ExecContext(ctx, query, before.UTC())
+	return err
+}
+
+// generateLabelsHash creates a deterministic hash from labels for indexing
+func generateLabelsHash(labels model.LabelSet) string {
+	// Convert labels to sorted slice for deterministic hash
+	var labelPairs []string
+	for name, value := range labels {
+		labelPairs = append(labelPairs, fmt.Sprintf("%s=%s", name, value))
+	}
+	sort.Strings(labelPairs)
+	
+	// Create hash of sorted labels
+	hasher := sha256.New()
+	for _, pair := range labelPairs {
+		hasher.Write([]byte(pair))
+	}
+	return hex.EncodeToString(hasher.Sum(nil))
+}
+
+// GetAlerts retrieves all active alerts from the database.
+func (s *SQL) GetAlerts(ctx context.Context) ([]*Alert, error) {
+	start := time.Now()
+	var err error
+	defer func() { s.recordOperation("get_alerts", start, err) }()
+	
+	var query string
+	switch s.config.Driver {
+	case "postgres", "pgx", "pq":
+		query = `SELECT data FROM alerts WHERE ends_at > $1 ORDER BY updated_at`
+	default:
+		query = `SELECT data FROM alerts WHERE ends_at > ? ORDER BY updated_at`
+	}
+	rows, err := s.db.QueryContext(ctx, query, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	
+	var alerts []*Alert
+	for rows.Next() {
+		var data []byte
+		if err = rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		
+		var alert Alert
+		if err = json.Unmarshal(data, &alert); err != nil {
+			s.logger.Warn("failed to unmarshal alert", "err", err)
+			continue
+		}
+		
+		alerts = append(alerts, &alert)
+	}
+	
+	err = rows.Err()
+	return alerts, err
+}
+
+// SetAlert stores or updates an alert in the database.
+func (s *SQL) SetAlert(ctx context.Context, alert *Alert) error {
+	start := time.Now()
+	var err error
+	defer func() { s.recordOperation("set_alert", start, err) }()
+	
+	data, err := json.Marshal(alert)
+	if err != nil {
+		return err
+	}
+	
+	labelsHash := generateLabelsHash(alert.Labels)
+	
+	var query string
+	switch s.config.Driver {
+	case "postgres", "pgx", "pq":
+		query = `
+		INSERT INTO alerts (fingerprint, data, labels_hash, starts_at, ends_at, updated_at) 
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (fingerprint) DO UPDATE SET
+			data = EXCLUDED.data,
+			labels_hash = EXCLUDED.labels_hash,
+			starts_at = LEAST(alerts.starts_at, EXCLUDED.starts_at),
+			ends_at = GREATEST(alerts.ends_at, EXCLUDED.ends_at),
+			updated_at = EXCLUDED.updated_at
+		`
+	default:
+		query = `
+		INSERT OR REPLACE INTO alerts (fingerprint, data, labels_hash, starts_at, ends_at, updated_at) 
+		VALUES (?, ?, ?, ?, ?, ?)
+		`
+	}
+	
+	_, err = s.db.ExecContext(ctx, query, 
+		alert.Fingerprint,
+		data,
+		labelsHash,
+		alert.StartsAt.UTC(), 
+		alert.EndsAt.UTC(),
+		alert.UpdatedAt.UTC(),
+	)
+	return err
+}
+
+// DeleteAlert removes an alert from the database.
+func (s *SQL) DeleteAlert(ctx context.Context, fingerprint string) error {
+	start := time.Now()
+	var err error
+	defer func() { s.recordOperation("delete_alert", start, err) }()
+	
+	var query string
+	switch s.config.Driver {
+	case "postgres", "pgx", "pq":
+		query = `DELETE FROM alerts WHERE fingerprint = $1`
+	default:
+		query = `DELETE FROM alerts WHERE fingerprint = ?`
+	}
+	_, err = s.db.ExecContext(ctx, query, fingerprint)
+	return err
+}
+
+// DeleteExpiredAlerts removes expired alerts from the database.
+func (s *SQL) DeleteExpiredAlerts(ctx context.Context, before time.Time) error {
+	start := time.Now()
+	var err error
+	defer func() { s.recordOperation("delete_expired_alerts", start, err) }()
+	
+	var query string
+	switch s.config.Driver {
+	case "postgres", "pgx", "pq":
+		query = `DELETE FROM alerts WHERE ends_at < $1`
+	default:
+		query = `DELETE FROM alerts WHERE ends_at < ?`
+	}
+	_, err = s.db.ExecContext(ctx, query, before.UTC())
 	return err
 }

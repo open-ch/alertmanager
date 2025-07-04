@@ -19,9 +19,31 @@ import (
 	"context"
 	"time"
 
+	"github.com/prometheus/common/model"
+	
 	"github.com/prometheus/alertmanager/nflog/nflogpb"
 	"github.com/prometheus/alertmanager/silence/silencepb"
 )
+
+// Alert represents an alert stored in the database
+type Alert struct {
+	// Unique fingerprint for the alert (based on labels)
+	Fingerprint string `json:"fingerprint"`
+	// Labels associated with the alert
+	Labels model.LabelSet `json:"labels"`
+	// Annotations for the alert
+	Annotations model.LabelSet `json:"annotations"`
+	// StartsAt is when the alert started firing
+	StartsAt time.Time `json:"startsAt"`
+	// EndsAt is when the alert stopped firing (or expected to stop)
+	EndsAt time.Time `json:"endsAt"`
+	// GeneratorURL identifies the source of this alert
+	GeneratorURL string `json:"generatorURL"`
+	// UpdatedAt is the last time this alert was updated
+	UpdatedAt time.Time `json:"updatedAt"`
+	// Timeout indicates if this alert has timed out
+	Timeout bool `json:"timeout"`
+}
 
 // DB defines the interface for database operations supporting shared state storage.
 type DB interface {
@@ -34,6 +56,12 @@ type DB interface {
 	GetNotificationEntries(ctx context.Context, since time.Time) ([]*nflogpb.MeshEntry, error)
 	SetNotificationEntry(ctx context.Context, entry *nflogpb.MeshEntry) error
 	DeleteExpiredNotificationEntries(ctx context.Context, before time.Time) error
+	
+	// Alert operations - for shared alert storage and deduplication
+	GetAlerts(ctx context.Context) ([]*Alert, error)
+	SetAlert(ctx context.Context, alert *Alert) error
+	DeleteAlert(ctx context.Context, fingerprint string) error
+	DeleteExpiredAlerts(ctx context.Context, before time.Time) error
 	
 	// Cluster management
 	RegisterNode(ctx context.Context, nodeID string, address string) error
@@ -61,6 +89,10 @@ type Tx interface {
 	GetNotificationEntries(ctx context.Context, since time.Time) ([]*nflogpb.MeshEntry, error)
 	SetNotificationEntry(ctx context.Context, entry *nflogpb.MeshEntry) error
 	DeleteExpiredNotificationEntries(ctx context.Context, before time.Time) error
+	GetAlerts(ctx context.Context) ([]*Alert, error)
+	SetAlert(ctx context.Context, alert *Alert) error
+	DeleteAlert(ctx context.Context, fingerprint string) error
+	DeleteExpiredAlerts(ctx context.Context, before time.Time) error
 }
 
 // Node represents a cluster node.

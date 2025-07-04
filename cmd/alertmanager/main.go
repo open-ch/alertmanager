@@ -56,7 +56,9 @@ import (
 	"github.com/prometheus/alertmanager/matcher/compat"
 	"github.com/prometheus/alertmanager/nflog"
 	"github.com/prometheus/alertmanager/notify"
+	"github.com/prometheus/alertmanager/provider"
 	"github.com/prometheus/alertmanager/provider/mem"
+	dbprovider "github.com/prometheus/alertmanager/provider/db"
 	"github.com/prometheus/alertmanager/silence"
 	"github.com/prometheus/alertmanager/template"
 	"github.com/prometheus/alertmanager/timeinterval"
@@ -477,12 +479,31 @@ func run() int {
 		dbPeer.WaitReady(ctx)
 	}
 
-	alerts, err := mem.NewAlerts(context.Background(), marker, *alertGCInterval, nil, logger, prometheus.DefaultRegisterer)
-	if err != nil {
-		logger.Error("error creating memory provider", "err", err)
-		return 1
+	// Choose alert provider based on whether database backend is enabled
+	var alerts provider.Alerts
+	var alertsCloser interface{ Close() }
+	if database != nil {
+		// Use database-backed alert provider
+		dbAlerts, err := dbprovider.NewAlerts(database, marker, logger, prometheus.DefaultRegisterer)
+		if err != nil {
+			logger.Error("error creating database provider", "err", err)
+			return 1
+		}
+		alerts = dbAlerts
+		alertsCloser = dbAlerts
+		logger.Info("using database-backed alert provider")
+	} else {
+		// Use in-memory alert provider
+		memAlerts, err := mem.NewAlerts(context.Background(), marker, *alertGCInterval, nil, logger, prometheus.DefaultRegisterer)
+		if err != nil {
+			logger.Error("error creating memory provider", "err", err)
+			return 1
+		}
+		alerts = memAlerts
+		alertsCloser = memAlerts
+		logger.Info("using memory-backed alert provider")
 	}
-	defer alerts.Close()
+	defer alertsCloser.Close()
 
 	var disp *dispatch.Dispatcher
 	defer func() {

@@ -378,8 +378,13 @@ func run() int {
 	// Therefore we explicly pass an empty interface, to detect if the
 	// cluster is not enabled in notify.
 	var clusterPeer cluster.ClusterPeer
+	var statusProvider api.StatusProvider
 	if peer != nil {
 		clusterPeer = peer
+		if bootManager != nil {
+			// Use the same readiness checker as status provider for API
+			statusProvider = cluster.NewCompositeReadinessChecker(bootManager, peer)
+		}
 	}
 
 	api, err := api.New(api.Options{
@@ -388,6 +393,7 @@ func run() int {
 		AlertStatusFunc: marker.Status,
 		GroupMutedFunc:  marker.Muted,
 		Peer:            clusterPeer,
+		StatusProvider:  statusProvider,
 		Timeout:         *httpTimeout,
 		Concurrency:     *getConcurrency,
 		Logger:          logger.With("component", "api"),

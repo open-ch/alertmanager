@@ -124,12 +124,12 @@ func (c *CompositeReadinessChecker) IsReady() bool {
 	if c.bootManager == nil {
 		return true
 	}
-	
+
 	// In HA mode, boot timeout must have expired first
 	if !c.bootManager.IsReady() {
 		return false
 	}
-	
+
 	// If clustering is enabled, cluster must also be ready
 	if c.peer != nil {
 		// Try to cast to *Peer to check readiness
@@ -137,7 +137,33 @@ func (c *CompositeReadinessChecker) IsReady() bool {
 			return peer.Ready()
 		}
 	}
-	
+
 	// Boot timeout expired and no cluster - ready
 	return true
+}
+
+// Status returns the current status string, considering both boot timeout and cluster state.
+func (c *CompositeReadinessChecker) Status() string {
+	// If no boot manager, we're in single replica mode - disabled
+	if c.bootManager == nil {
+		return "disabled"
+	}
+
+	// In HA mode, check boot timeout first
+	if !c.bootManager.IsReady() {
+		// Use "settling" during boot timeout to maintain API compatibility
+		// In the future, this could be "booting" with OpenAPI spec update
+		return "settling"
+	}
+
+	// Boot timeout expired, check cluster state
+	if c.peer != nil {
+		// Try to cast to *Peer to get cluster status
+		if peer, ok := c.peer.(*Peer); ok {
+			return peer.Status() // "ready" or "settling"
+		}
+	}
+
+	// Boot timeout expired and no cluster - ready
+	return "ready"
 }

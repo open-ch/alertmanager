@@ -52,9 +52,15 @@ import (
 	"github.com/prometheus/alertmanager/types"
 )
 
+// statusProvider provides enhanced cluster status information.
+type statusProvider interface {
+	Status() string
+}
+
 // API represents an Alertmanager API v2.
 type API struct {
 	peer           cluster.ClusterPeer
+	statusProvider statusProvider
 	silences       *silence.Silences
 	alerts         provider.Alerts
 	alertGroups    groupsFn
@@ -91,6 +97,7 @@ func NewAPI(
 	gmf groupMutedFunc,
 	silences *silence.Silences,
 	peer cluster.ClusterPeer,
+	statusProvider statusProvider,
 	l *slog.Logger,
 	r prometheus.Registerer,
 ) (*API, error) {
@@ -100,6 +107,7 @@ func NewAPI(
 		alertGroups:    gf,
 		groupMutedFunc: gmf,
 		peer:           peer,
+		statusProvider: statusProvider,
 		silences:       silences,
 		logger:         l,
 		m:              metrics.NewAlerts(r),
@@ -197,7 +205,15 @@ func (api *API) getStatusHandler(params general_ops.GetStatusParams) middleware.
 
 	// If alertmanager cluster feature is disabled, then api.peers == nil.
 	if api.peer != nil {
-		status := api.peer.Status()
+		var status string
+		
+		// Use enhanced status provider if available
+		if api.statusProvider != nil {
+			status = api.statusProvider.Status()
+		} else {
+			// Fall back to peer status
+			status = api.peer.Status()
+		}
 
 		peers := []*open_api_models.PeerStatus{}
 		for _, n := range api.peer.Peers() {

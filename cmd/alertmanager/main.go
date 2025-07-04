@@ -239,6 +239,7 @@ func run() int {
 		return 1
 	}
 	var peer *cluster.Peer
+	var bootManager *cluster.BootManager
 	if *clusterBindAddr != "" {
 		peer, err = cluster.Create(
 			logger.With("component", "cluster"),
@@ -261,6 +262,10 @@ func run() int {
 			return 1
 		}
 		clusterEnabled.Set(1)
+
+		// Create and start boot manager for HA mode
+		bootManager = cluster.NewBootManager(*clusterBootTimeout, logger.With("component", "boot"))
+		bootManager.Start()
 	}
 
 	stopc := make(chan struct{})
@@ -326,6 +331,16 @@ func run() int {
 
 	// Peer state listeners have been registered, now we can join and get the initial state.
 	if peer != nil {
+		// Wait for boot timeout before joining cluster in HA mode
+		if bootManager != nil {
+			logger.Info("Waiting for boot timeout before joining cluster")
+			ctx, cancel := context.WithTimeout(context.Background(), *clusterBootTimeout+10*time.Second)
+			if err := bootManager.WaitReady(ctx); err != nil {
+				logger.Warn("boot timeout interrupted", "err", err)
+			}
+			cancel()
+		}
+
 		err = peer.Join(
 			*reconnectInterval,
 			*peerReconnectTimeout,

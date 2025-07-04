@@ -30,11 +30,11 @@ import (
 // Unlike the memory-based provider, this stores alerts persistently in a database and
 // enables high availability by sharing alert state across multiple Alertmanager instances.
 type Alerts struct {
-	db         db.DB
-	logger     *slog.Logger
-	marker     types.AlertMarker
-	cancel     context.CancelFunc
-	gcInterval time.Duration
+	db                  db.DB
+	logger              *slog.Logger
+	marker              types.AlertMarker
+	cancel              context.CancelFunc
+	maintenanceInterval time.Duration
 }
 
 // NewAlerts creates a new database-backed alert provider.
@@ -42,16 +42,16 @@ func NewAlerts(db db.DB, marker types.AlertMarker, logger *slog.Logger, r promet
 	return NewAlertsWithGC(db, marker, logger, r, 15*time.Minute) // Default 15-minute cleanup interval
 }
 
-// NewAlertsWithGC creates a new database-backed alert provider with custom garbage collection interval.
-func NewAlertsWithGC(db db.DB, marker types.AlertMarker, logger *slog.Logger, r prometheus.Registerer, gcInterval time.Duration) (*Alerts, error) {
+// NewAlertsWithGC creates a new database-backed alert provider with custom maintenance interval.
+func NewAlertsWithGC(db db.DB, marker types.AlertMarker, logger *slog.Logger, r prometheus.Registerer, maintenanceInterval time.Duration) (*Alerts, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	
 	a := &Alerts{
-		db:         db,
-		logger:     logger.With("component", "db-provider"),
-		marker:     marker,
-		cancel:     cancel,
-		gcInterval: gcInterval,
+		db:                   db,
+		logger:               logger.With("component", "db-provider"),
+		marker:               marker,
+		cancel:               cancel,
+		maintenanceInterval:  maintenanceInterval,
 	}
 
 	if r != nil {
@@ -343,7 +343,7 @@ func (a *Alerts) count(state types.AlertState) int {
 
 // runGC periodically removes expired alerts from the database.
 func (a *Alerts) runGC(ctx context.Context) {
-	ticker := time.NewTicker(a.gcInterval)
+	ticker := time.NewTicker(a.maintenanceInterval)
 	defer ticker.Stop()
 
 	for {

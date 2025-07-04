@@ -358,6 +358,13 @@ func run() int {
 		notificationLogInterface = dbLog // Use for notify pipeline
 		logger.Info("database-backed notification log created")
 		
+		// Start maintenance for the DB notification log
+		wg.Add(1)
+		go func() {
+			dbLog.Maintenance(*maintenanceInterval, "", stopc, nil)
+			wg.Done()
+		}()
+		
 		// Use file-based silences for now (DB silences can be implemented later)
 		silenceOpts := silence.Options{
 			SnapshotFile: filepath.Join(*dataDir, "silences"),
@@ -375,6 +382,13 @@ func run() int {
 			logger.Error("error creating silence", "err", err)
 			return 1
 		}
+		
+		// Start maintenance for the silences in DB mode (still file-based)
+		wg.Add(1)
+		go func() {
+			silences.Maintenance(*maintenanceInterval, filepath.Join(*dataDir, "silences"), stopc, nil)
+			wg.Done()
+		}()
 		
 		// In database mode, we don't use peer state management for notification log
 		// The database handles the state coordination

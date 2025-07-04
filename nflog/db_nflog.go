@@ -229,9 +229,22 @@ func (l *DBLog) Query(params ...QueryParam) ([]*pb.Entry, error) {
 	return []*pb.Entry{mostRecent}, nil
 }
 
-// GC runs garbage collection (no-op for database implementation).
+// GC runs garbage collection, removing expired notification entries.
 func (l *DBLog) GC() (int, error) {
-	// Database handles garbage collection automatically
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Calculate the cutoff time for expired entries
+	cutoffTime := time.Now().Add(-l.retention)
+
+	// Delete expired notification entries
+	if err := l.db.DeleteExpiredNotificationEntries(ctx, cutoffTime); err != nil {
+		l.logger.Error("failed to delete expired notification entries", "err", err)
+		return 0, err
+	}
+
+	l.logger.Debug("notification log garbage collection completed", "cutoff_time", cutoffTime)
+	// Return 0 for count as we don't track the number deleted
 	return 0, nil
 }
 
@@ -332,6 +345,11 @@ func (l *DBLog) Maintenance(interval time.Duration, snapFile string, stopc <-cha
 			case <-stopc:
 				return
 			case <-ticker.C:
+				// Run garbage collection to remove expired entries
+				if _, err := l.GC(); err != nil {
+					l.logger.Warn("notification log garbage collection failed", "err", err)
+				}
+				
 				// Take snapshot if requested
 				if snapFile != "" {
 					if err := l.takeSnapshot(snapFile); err != nil {

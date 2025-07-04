@@ -333,7 +333,7 @@ func run() int {
 		if err != nil {
 			logger.Warn("unable to join gossip mesh", "err", err)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), *settleTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), *settleTimeout + *gossipInitialDelay)
 		defer func() {
 			cancel()
 			if err := peer.Leave(10 * time.Second); err != nil {

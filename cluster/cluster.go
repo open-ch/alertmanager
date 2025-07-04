@@ -669,8 +669,12 @@ func (p *Peer) Position() int {
 // Inspired from https://github.com/apache/cassandra/blob/7a40abb6a5108688fb1b10c375bb751cbb782ea4/src/java/org/apache/cassandra/gms/Gossiper.java
 // This is clearly not perfect or strictly correct but should prevent the alertmanager to send notification before it is obviously not ready.
 // This is especially important for those that do not have persistent storage.
-func (p *Peer) Settle(ctx context.Context, interval time.Duration) {
+func (p *Peer) Settle(ctx context.Context, interval time.Duration, initialDelay time.Duration) {
 	const NumOkayRequired = 3
+
+	p.logger.Info("Delaying start of gossip...", "initialDelay", initialDelay)
+	time.Sleep(initialDelay)
+
 	p.logger.Info("Waiting for gossip to settle...", "interval", interval)
 	start := time.Now()
 	nPeers := 0

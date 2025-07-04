@@ -70,7 +70,7 @@ func testJoinLeave(t *testing.T) {
 		require.Equal(t, context.Canceled, p.WaitReady(ctx))
 	}
 	require.Equal(t, "settling", p.Status())
-	go p.Settle(context.Background(), 0*time.Second)
+	go p.Settle(context.Background(), 0*time.Second, 0*time.Second)
 	require.NoError(t, p.WaitReady(context.Background()))
 	require.Equal(t, "ready", p.Status())
 

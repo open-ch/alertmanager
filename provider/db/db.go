@@ -27,25 +27,39 @@ import (
 )
 
 // Alerts provides a database-backed alert provider that implements the provider.Alerts interface.
-// Unlike the memory-based provider, this stores alerts persistently in a database and 
+// Unlike the memory-based provider, this stores alerts persistently in a database and
 // enables high availability by sharing alert state across multiple Alertmanager instances.
 type Alerts struct {
-	db     db.DB
-	logger *slog.Logger
-	marker types.AlertMarker
+	db         db.DB
+	logger     *slog.Logger
+	marker     types.AlertMarker
+	cancel     context.CancelFunc
+	gcInterval time.Duration
 }
 
 // NewAlerts creates a new database-backed alert provider.
 func NewAlerts(db db.DB, marker types.AlertMarker, logger *slog.Logger, r prometheus.Registerer) (*Alerts, error) {
+	return NewAlertsWithGC(db, marker, logger, r, 15*time.Minute) // Default 15-minute cleanup interval
+}
+
+// NewAlertsWithGC creates a new database-backed alert provider with custom garbage collection interval.
+func NewAlertsWithGC(db db.DB, marker types.AlertMarker, logger *slog.Logger, r prometheus.Registerer, gcInterval time.Duration) (*Alerts, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	
 	a := &Alerts{
-		db:     db,
-		logger: logger.With("component", "db-provider"),
-		marker: marker,
+		db:         db,
+		logger:     logger.With("component", "db-provider"),
+		marker:     marker,
+		cancel:     cancel,
+		gcInterval: gcInterval,
 	}
 
 	if r != nil {
 		a.registerMetrics(r)
 	}
+
+	// Start garbage collection goroutine
+	go a.runGC(ctx)
 
 	return a, nil
 }
@@ -327,8 +341,41 @@ func (a *Alerts) count(state types.AlertState) int {
 	return count
 }
 
+// runGC periodically removes expired alerts from the database.
+func (a *Alerts) runGC(ctx context.Context) {
+	ticker := time.NewTicker(a.gcInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.cleanupExpiredAlerts()
+		}
+	}
+}
+
+func (a *Alerts) cleanupExpiredAlerts() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Delete expired alerts directly using the database method
+	cutoffTime := time.Now().Add(-1 * time.Hour) // Keep alerts for 1 hour after they expire
+	
+	if err := a.db.DeleteExpiredAlerts(ctx, cutoffTime); err != nil {
+		a.logger.Error("failed to cleanup expired alerts", "err", err)
+	} else {
+		a.logger.Debug("cleanup expired alerts completed", "cutoff_time", cutoffTime)
+	}
+}
+
 // Close cleans up the alert provider resources.
 func (a *Alerts) Close() {
+	// Stop the garbage collection goroutine
+	if a.cancel != nil {
+		a.cancel()
+	}
 	// Database connections are managed by the db.DB instance
 	// No additional cleanup needed here
 }

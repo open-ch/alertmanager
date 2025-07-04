@@ -483,15 +483,15 @@ func run() int {
 	var alerts provider.Alerts
 	var alertsCloser interface{ Close() }
 	if database != nil {
-		// Use database-backed alert provider
-		dbAlerts, err := dbprovider.NewAlerts(database, marker, logger, prometheus.DefaultRegisterer)
+		// Use database-backed alert provider with maintenance interval for GC
+		dbAlerts, err := dbprovider.NewAlertsWithGC(database, marker, logger, prometheus.DefaultRegisterer, *maintenanceInterval)
 		if err != nil {
 			logger.Error("error creating database provider", "err", err)
 			return 1
 		}
 		alerts = dbAlerts
 		alertsCloser = dbAlerts
-		logger.Info("using database-backed alert provider")
+		logger.Info("using database-backed alert provider", "gc_interval", maintenanceInterval.String())
 	} else {
 		// Use in-memory alert provider
 		memAlerts, err := mem.NewAlerts(context.Background(), marker, *alertGCInterval, nil, logger, prometheus.DefaultRegisterer)

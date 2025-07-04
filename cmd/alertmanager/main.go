@@ -562,7 +562,15 @@ func run() int {
 
 	webReload := make(chan chan error)
 
-	ui.Register(router, webReload, logger)
+	// Create readiness checker for UI
+	if bootManager != nil {
+		// HA mode: use composite checker that considers boot timeout and cluster readiness
+		readinessChecker := cluster.NewCompositeReadinessChecker(bootManager, peer)
+		ui.RegisterWithReadiness(router, webReload, logger, readinessChecker)
+	} else {
+		// Single replica mode: use default register (always ready)
+		ui.Register(router, webReload, logger)
+	}
 	reactapp.Register(router, logger)
 
 	mux := api.Register(router, *routePrefix)

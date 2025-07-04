@@ -26,8 +26,24 @@ import (
 	"github.com/prometheus/alertmanager/asset"
 )
 
+// ReadinessChecker provides a way to check if the service is ready to serve traffic.
+type ReadinessChecker interface {
+	// IsReady returns true if the service is ready to serve traffic.
+	IsReady() bool
+}
+
+// defaultReadinessChecker always returns ready (for single replica mode).
+type defaultReadinessChecker struct{}
+
+func (d defaultReadinessChecker) IsReady() bool { return true }
+
 // Register registers handlers to serve files for the web interface.
 func Register(r *route.Router, reloadCh chan<- chan error, logger *slog.Logger) {
+	RegisterWithReadiness(r, reloadCh, logger, defaultReadinessChecker{})
+}
+
+// RegisterWithReadiness registers handlers with a custom readiness checker.
+func RegisterWithReadiness(r *route.Router, reloadCh chan<- chan error, logger *slog.Logger, readinessChecker ReadinessChecker) {
 	r.Get("/metrics", promhttp.Handler().ServeHTTP)
 
 	r.Get("/", func(w http.ResponseWriter, req *http.Request) {
@@ -80,11 +96,20 @@ func Register(r *route.Router, reloadCh chan<- chan error, logger *slog.Logger) 
 		w.WriteHeader(http.StatusOK)
 	})
 	r.Get("/-/ready", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "OK")
+		if readinessChecker.IsReady() {
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintf(w, "OK")
+		} else {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprintf(w, "Service Unavailable")
+		}
 	})
 	r.Head("/-/ready", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
+		if readinessChecker.IsReady() {
+			w.WriteHeader(http.StatusOK)
+		} else {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
 	})
 
 	r.Get("/debug/*subpath", http.DefaultServeMux.ServeHTTP)

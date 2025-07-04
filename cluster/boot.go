@@ -103,3 +103,41 @@ func (bm *BootManager) runBootTimeout() {
 		}
 	}
 }
+
+// CompositeReadinessChecker combines boot manager and cluster peer readiness.
+type CompositeReadinessChecker struct {
+	bootManager *BootManager
+	peer        interface{} // Can be *Peer or ClusterPeer
+}
+
+// NewCompositeReadinessChecker creates a readiness checker that considers both boot timeout and cluster readiness.
+func NewCompositeReadinessChecker(bootManager *BootManager, peer interface{}) *CompositeReadinessChecker {
+	return &CompositeReadinessChecker{
+		bootManager: bootManager,
+		peer:        peer,
+	}
+}
+
+// IsReady returns true only if boot timeout has expired and cluster is ready (if clustering enabled).
+func (c *CompositeReadinessChecker) IsReady() bool {
+	// If no boot manager, we're in single replica mode - always ready
+	if c.bootManager == nil {
+		return true
+	}
+	
+	// In HA mode, boot timeout must have expired first
+	if !c.bootManager.IsReady() {
+		return false
+	}
+	
+	// If clustering is enabled, cluster must also be ready
+	if c.peer != nil {
+		// Try to cast to *Peer to check readiness
+		if peer, ok := c.peer.(*Peer); ok {
+			return peer.Ready()
+		}
+	}
+	
+	// Boot timeout expired and no cluster - ready
+	return true
+}

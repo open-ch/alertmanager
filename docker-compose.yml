@@ -5,6 +5,8 @@ services:
       POSTGRES_DB: alertmanager
       POSTGRES_USER: alertmanager
       POSTGRES_PASSWORD: alertmanager_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     networks:
@@ -124,6 +126,7 @@ services:
       retries: 3
 
 volumes:
+  postgres_data:
   alertmanager-1-data:
   alertmanager-2-data:
   alertmanager-3-data:

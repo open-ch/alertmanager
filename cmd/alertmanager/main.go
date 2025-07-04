@@ -44,17 +44,21 @@ import (
 	webflag "github.com/prometheus/exporter-toolkit/web/kingpinflag"
 	"go.uber.org/automaxprocs/maxprocs"
 
+	_ "github.com/lib/pq"
 	"github.com/prometheus/alertmanager/api"
 	"github.com/prometheus/alertmanager/cluster"
 	"github.com/prometheus/alertmanager/config"
 	"github.com/prometheus/alertmanager/config/receiver"
+	"github.com/prometheus/alertmanager/db"
 	"github.com/prometheus/alertmanager/dispatch"
 	"github.com/prometheus/alertmanager/featurecontrol"
 	"github.com/prometheus/alertmanager/inhibit"
 	"github.com/prometheus/alertmanager/matcher/compat"
 	"github.com/prometheus/alertmanager/nflog"
 	"github.com/prometheus/alertmanager/notify"
+	"github.com/prometheus/alertmanager/provider"
 	"github.com/prometheus/alertmanager/provider/mem"
+	dbprovider "github.com/prometheus/alertmanager/provider/db"
 	"github.com/prometheus/alertmanager/silence"
 	"github.com/prometheus/alertmanager/template"
 	"github.com/prometheus/alertmanager/timeinterval"
@@ -176,6 +180,15 @@ func run() int {
 		tlsConfigFile          = kingpin.Flag("cluster.tls-config", "[EXPERIMENTAL] Path to config yaml file that can enable mutual TLS within the gossip protocol.").Default("").String()
 		allowInsecureAdvertise = kingpin.Flag("cluster.allow-insecure-public-advertise-address-discovery", "[EXPERIMENTAL] Allow alertmanager to discover and listen on a public IP address.").Bool()
 		label                  = kingpin.Flag("cluster.label", "The cluster label is an optional string to include on each packet and stream. It uniquely identifies the cluster and prevents cross-communication issues when sending gossip messages.").Default("").String()
+		
+		// Database configuration flags (alternative to gossip-based clustering)
+		dbDriver               = kingpin.Flag("storage.db.driver", "Database driver to use for shared state storage instead of gossip. Leave empty to use gossip.").Default("").String()
+		dbDSN                  = kingpin.Flag("storage.db.dsn", "Database connection string. Required when storage.db.driver is set.").Default("").String()
+		dbSyncInterval         = kingpin.Flag("storage.db.sync-interval", "Interval for database synchronization.").Default("30s").Duration()
+		dbNodeTimeout          = kingpin.Flag("storage.db.node-timeout", "Timeout for considering a node inactive.").Default("5m").Duration()
+		dbMaxOpenConns         = kingpin.Flag("storage.db.max-open-conns", "Maximum number of open database connections.").Default("25").Int()
+		dbMaxIdleConns         = kingpin.Flag("storage.db.max-idle-conns", "Maximum number of idle database connections.").Default("5").Int()
+		
 		featureFlags           = kingpin.Flag("enable-feature", fmt.Sprintf("Comma-separated experimental features to enable. Valid options: %s", strings.Join(featurecontrol.AllowedFlags, ", "))).Default("").String()
 	)
 
@@ -232,13 +245,69 @@ func run() int {
 		return 1
 	}
 
+	var peer *cluster.Peer  // Keep original type for gossip clustering
+	var dbPeer *cluster.DBPeer  // Database-based clustering peer
+	var database db.DB
+	
+	// Initialize TLS transport configuration for gossip-based clustering
 	tlsTransportConfig, err := cluster.GetTLSTransportConfig(*tlsConfigFile)
 	if err != nil {
 		logger.Error("unable to initialize TLS transport configuration for gossip mesh", "err", err)
 		return 1
 	}
-	var peer *cluster.Peer
-	if *clusterBindAddr != "" {
+	
+	// Check if database-based clustering is enabled
+	if *dbDriver != "" {
+		if *dbDSN == "" {
+			logger.Error("storage.db.dsn is required when storage.db.driver is set")
+			return 1
+		}
+		
+		logger.Info("using database for shared state", "driver", *dbDriver)
+		
+		// Initialize database
+		dbConfig := db.Config{
+			Driver:          *dbDriver,
+			DSN:             *dbDSN,
+			MaxOpenConns:    *dbMaxOpenConns,
+			MaxIdleConns:    *dbMaxIdleConns,
+			ConnMaxLifetime: 30 * time.Minute,
+			ConnMaxIdleTime: 5 * time.Minute,
+			NodeTimeout:     *dbNodeTimeout,
+			SyncInterval:    *dbSyncInterval,
+		}
+		
+		database, err = db.NewSQL(dbConfig, logger.With("component", "database"), prometheus.DefaultRegisterer)
+		if err != nil {
+			logger.Error("failed to initialize database", "err", err)
+			return 1
+		}
+		defer database.Close()
+		
+		// Create database-backed cluster peer
+		advertiseAddr := *clusterAdvertiseAddr
+		if advertiseAddr == "" {
+			advertiseAddr = "127.0.0.1:9093" // Default advertise address
+		}
+		
+		dbPeerConfig := cluster.DBPeerConfig{
+			DB:           database,
+			Address:      advertiseAddr,
+			SyncInterval: *dbSyncInterval,
+			NodeTimeout:  *dbNodeTimeout,
+			Logger:       logger.With("component", "cluster"),
+			Metrics:      prometheus.DefaultRegisterer,
+		}
+		
+		dbPeer, err = cluster.NewDBPeer(dbPeerConfig)
+		if err != nil {
+			logger.Error("failed to create database cluster peer", "err", err)
+			return 1
+		}
+		clusterEnabled.Set(1)
+		
+	} else if *clusterBindAddr != "" {
+		// Use traditional gossip-based clustering
 		peer, err = cluster.Create(
 			logger.With("component", "cluster"),
 			prometheus.DefaultRegisterer,
@@ -265,58 +334,124 @@ func run() int {
 	stopc := make(chan struct{})
 	var wg sync.WaitGroup
 
-	notificationLogOpts := nflog.Options{
-		SnapshotFile: filepath.Join(*dataDir, "nflog"),
-		Retention:    *retention,
-		Logger:       logger.With("component", "nflog"),
-		Metrics:      prometheus.DefaultRegisterer,
-	}
-
-	notificationLog, err := nflog.New(notificationLogOpts)
-	if err != nil {
-		logger.Error("error creating notification log", "err", err)
-		return 1
-	}
-	if peer != nil {
-		c := peer.AddState("nfl", notificationLog, prometheus.DefaultRegisterer)
-		notificationLog.SetBroadcast(c.Broadcast)
-	}
-
-	wg.Add(1)
-	go func() {
-		notificationLog.Maintenance(*maintenanceInterval, filepath.Join(*dataDir, "nflog"), stopc, nil)
-		wg.Done()
-	}()
-
 	marker := types.NewMarker(prometheus.DefaultRegisterer)
 
-	silenceOpts := silence.Options{
-		SnapshotFile: filepath.Join(*dataDir, "silences"),
-		Retention:    *retention,
-		Limits: silence.Limits{
-			MaxSilences:         func() int { return *maxSilences },
-			MaxSilenceSizeBytes: func() int { return *maxSilenceSizeBytes },
-		},
-		Logger:  logger.With("component", "silences"),
-		Metrics: prometheus.DefaultRegisterer,
-	}
+	var notificationLog *nflog.Log
+	var notificationLogInterface notify.NotificationLog // For passing to notify pipeline
+	var silences *silence.Silences
+	
+	if database != nil {
+		// Use database-backed notification log
+		dbLogConfig := nflog.DBLogOptions{
+			DB:           database,
+			Retention:    *retention,
+			SyncInterval: *dbSyncInterval,
+			Logger:       logger.With("component", "nflog"),
+			Metrics:      prometheus.DefaultRegisterer,
+		}
+		
+		dbLog, err := nflog.NewDBLog(dbLogConfig)
+		if err != nil {
+			logger.Error("error creating database notification log", "err", err)
+			return 1
+		}
+		notificationLogInterface = dbLog // Use for notify pipeline
+		logger.Info("database-backed notification log created")
+		
+		// Start maintenance for the DB notification log
+		wg.Add(1)
+		go func() {
+			dbLog.Maintenance(*maintenanceInterval, "", stopc, nil)
+			wg.Done()
+		}()
+		
+		// Use file-based silences for now (DB silences can be implemented later)
+		silenceOpts := silence.Options{
+			SnapshotFile: filepath.Join(*dataDir, "silences"),
+			Retention:    *retention,
+			Limits: silence.Limits{
+				MaxSilences:         func() int { return *maxSilences },
+				MaxSilenceSizeBytes: func() int { return *maxSilenceSizeBytes },
+			},
+			Logger:  logger.With("component", "silences"),
+			Metrics: prometheus.DefaultRegisterer,
+		}
 
-	silences, err := silence.New(silenceOpts)
-	if err != nil {
-		logger.Error("error creating silence", "err", err)
-		return 1
-	}
-	if peer != nil {
-		c := peer.AddState("sil", silences, prometheus.DefaultRegisterer)
-		silences.SetBroadcast(c.Broadcast)
-	}
+		silences, err = silence.New(silenceOpts)
+		if err != nil {
+			logger.Error("error creating silence", "err", err)
+			return 1
+		}
+		
+		// Start maintenance for the silences in DB mode (still file-based)
+		wg.Add(1)
+		go func() {
+			silences.Maintenance(*maintenanceInterval, filepath.Join(*dataDir, "silences"), stopc, nil)
+			wg.Done()
+		}()
+		
+		// In database mode, we don't use peer state management for notification log
+		// The database handles the state coordination
+		
+	} else {
+		// Use traditional file-backed implementations
+		notificationLogOpts := nflog.Options{
+			SnapshotFile: filepath.Join(*dataDir, "nflog"),
+			Retention:    *retention,
+			Logger:       logger.With("component", "nflog"),
+			Metrics:      prometheus.DefaultRegisterer,
+		}
 
-	// Start providers before router potentially sends updates.
-	wg.Add(1)
-	go func() {
-		silences.Maintenance(*maintenanceInterval, filepath.Join(*dataDir, "silences"), stopc, nil)
-		wg.Done()
-	}()
+		notificationLog, err = nflog.New(notificationLogOpts)
+		if err != nil {
+			logger.Error("error creating notification log", "err", err)
+			return 1
+		}
+		notificationLogInterface = notificationLog // Use for notify pipeline
+		if peer != nil {
+			c := peer.AddState("nfl", notificationLog, prometheus.DefaultRegisterer)
+			notificationLog.SetBroadcast(c.Broadcast)
+		}
+
+		wg.Add(1)
+		go func() {
+			notificationLog.Maintenance(*maintenanceInterval, filepath.Join(*dataDir, "nflog"), stopc, nil)
+			wg.Done()
+		}()
+
+		wg.Add(1)
+		go func() {
+			notificationLog.Maintenance(*maintenanceInterval, filepath.Join(*dataDir, "nflog"), stopc, nil)
+			wg.Done()
+		}()
+
+		silenceOpts := silence.Options{
+			SnapshotFile: filepath.Join(*dataDir, "silences"),
+			Retention:    *retention,
+			Limits: silence.Limits{
+				MaxSilences:         func() int { return *maxSilences },
+				MaxSilenceSizeBytes: func() int { return *maxSilenceSizeBytes },
+			},
+			Logger:  logger.With("component", "silences"),
+			Metrics: prometheus.DefaultRegisterer,
+		}
+
+		silences, err = silence.New(silenceOpts)
+		if err != nil {
+			logger.Error("error creating silence", "err", err)
+			return 1
+		}
+		if peer != nil {
+			c := peer.AddState("sil", silences, prometheus.DefaultRegisterer)
+			silences.SetBroadcast(c.Broadcast)
+		}
+
+		wg.Add(1)
+		go func() {
+			silences.Maintenance(*maintenanceInterval, filepath.Join(*dataDir, "silences"), stopc, nil)
+			wg.Done()
+		}()
+	}
 
 	defer func() {
 		close(stopc)
@@ -325,6 +460,7 @@ func run() int {
 
 	// Peer state listeners have been registered, now we can join and get the initial state.
 	if peer != nil {
+		// Gossip-based clustering
 		err = peer.Join(
 			*reconnectInterval,
 			*peerReconnectTimeout,
@@ -340,14 +476,48 @@ func run() int {
 			}
 		}()
 		go peer.Settle(ctx, *gossipInterval*10)
+	} else if dbPeer != nil {
+		// Database-based clustering
+		err = dbPeer.Join(*reconnectInterval, *peerReconnectTimeout)
+		if err != nil {
+			logger.Warn("unable to join database cluster", "err", err)
+		}
+		defer func() {
+			if err := dbPeer.Leave(10 * time.Second); err != nil {
+				logger.Warn("unable to leave database cluster", "err", err)
+			}
+		}()
+		// Database clustering is always ready, no need to wait for settlement
+		ctx, cancel := context.WithTimeout(context.Background(), *settleTimeout)
+		defer cancel()
+		dbPeer.WaitReady(ctx)
 	}
 
-	alerts, err := mem.NewAlerts(context.Background(), marker, *alertGCInterval, nil, logger, prometheus.DefaultRegisterer)
-	if err != nil {
-		logger.Error("error creating memory provider", "err", err)
-		return 1
+	// Choose alert provider based on whether database backend is enabled
+	var alerts provider.Alerts
+	var alertsCloser interface{ Close() }
+	if database != nil {
+		// Use database-backed alert provider with maintenance interval for GC
+		dbAlerts, err := dbprovider.NewAlertsWithGC(database, marker, logger, prometheus.DefaultRegisterer, *maintenanceInterval)
+		if err != nil {
+			logger.Error("error creating database provider", "err", err)
+			return 1
+		}
+		alerts = dbAlerts
+		alertsCloser = dbAlerts
+		logger.Info("using database-backed alert provider", "gc_interval", maintenanceInterval.String())
+	} else {
+		// Use in-memory alert provider
+		memAlerts, err := mem.NewAlerts(context.Background(), marker, *alertGCInterval, nil, logger, prometheus.DefaultRegisterer)
+		if err != nil {
+			logger.Error("error creating memory provider", "err", err)
+			return 1
+		}
+		alerts = memAlerts
+		alertsCloser = memAlerts
+		logger.Info("using memory-backed alert provider")
 	}
-	defer alerts.Close()
+	defer alertsCloser.Close()
 
 	var disp *dispatch.Dispatcher
 	defer func() {
@@ -364,6 +534,8 @@ func run() int {
 	var clusterPeer cluster.ClusterPeer
 	if peer != nil {
 		clusterPeer = peer
+	} else if dbPeer != nil {
+		clusterPeer = dbPeer
 	}
 
 	api, err := api.New(api.Options{
@@ -393,6 +565,9 @@ func run() int {
 	waitFunc := func() time.Duration { return 0 }
 	if peer != nil {
 		waitFunc = clusterWait(peer, *peerTimeout)
+	} else if dbPeer != nil {
+		// Database clustering doesn't need wait times like gossip
+		waitFunc = func() time.Duration { return 0 }
 	}
 	timeoutFunc := func(d time.Duration) time.Duration {
 		if d < notify.MinTimeout {
@@ -470,6 +645,9 @@ func run() int {
 		var pipelinePeer notify.Peer
 		if peer != nil {
 			pipelinePeer = peer
+		} else if dbPeer != nil {
+			// Database peer implements notify.Peer interface
+			pipelinePeer = dbPeer
 		}
 
 		pipeline := pipelineBuilder.New(
@@ -479,7 +657,7 @@ func run() int {
 			silencer,
 			intervener,
 			marker,
-			notificationLog,
+			notificationLogInterface,
 			pipelinePeer,
 		)
 

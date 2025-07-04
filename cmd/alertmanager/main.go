@@ -176,7 +176,7 @@ func run() int {
 		tlsConfigFile          = kingpin.Flag("cluster.tls-config", "[EXPERIMENTAL] Path to config yaml file that can enable mutual TLS within the gossip protocol.").Default("").String()
 		allowInsecureAdvertise = kingpin.Flag("cluster.allow-insecure-public-advertise-address-discovery", "[EXPERIMENTAL] Allow alertmanager to discover and listen on a public IP address.").Bool()
 		label                  = kingpin.Flag("cluster.label", "The cluster label is an optional string to include on each packet and stream. It uniquely identifies the cluster and prevents cross-communication issues when sending gossip messages.").Default("").String()
-		gossipInitialDelay     = kingpin.Flag("cluster.gossip-initial-delay", "Initial delay before starting gossipping.").Default("0s").Duration()
+		gossipInitialDelay     = kingpin.Flag("cluster.gossip-initial-delay", "Initial delay before starting gossipping.").Default("5m").Duration()
 		featureFlags           = kingpin.Flag("enable-feature", fmt.Sprintf("Comma-separated experimental features to enable. Valid options: %s", strings.Join(featurecontrol.AllowedFlags, ", "))).Default("").String()
 	)
 

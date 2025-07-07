@@ -176,6 +176,7 @@ func run() int {
 		tlsConfigFile          = kingpin.Flag("cluster.tls-config", "[EXPERIMENTAL] Path to config yaml file that can enable mutual TLS within the gossip protocol.").Default("").String()
 		allowInsecureAdvertise = kingpin.Flag("cluster.allow-insecure-public-advertise-address-discovery", "[EXPERIMENTAL] Allow alertmanager to discover and listen on a public IP address.").Bool()
 		label                  = kingpin.Flag("cluster.label", "The cluster label is an optional string to include on each packet and stream. It uniquely identifies the cluster and prevents cross-communication issues when sending gossip messages.").Default("").String()
+		clusterBootTimeout     = kingpin.Flag("cluster.boot-timeout", "Time to wait before joining the gossip cluster. During this period, the API server accepts alerts but readiness probe returns NOT READY. Only applies when clustering is enabled.").Default("5m").Duration()
 		featureFlags           = kingpin.Flag("enable-feature", fmt.Sprintf("Comma-separated experimental features to enable. Valid options: %s", strings.Join(featurecontrol.AllowedFlags, ", "))).Default("").String()
 	)
 
@@ -238,6 +239,7 @@ func run() int {
 		return 1
 	}
 	var peer *cluster.Peer
+	var bootManager *cluster.BootManager
 	if *clusterBindAddr != "" {
 		peer, err = cluster.Create(
 			logger.With("component", "cluster"),
@@ -260,6 +262,10 @@ func run() int {
 			return 1
 		}
 		clusterEnabled.Set(1)
+
+		// Create and start boot manager for HA mode
+		bootManager = cluster.NewBootManager(*clusterBootTimeout, logger.With("component", "boot"))
+		bootManager.Start()
 	}
 
 	stopc := make(chan struct{})
@@ -325,6 +331,16 @@ func run() int {
 
 	// Peer state listeners have been registered, now we can join and get the initial state.
 	if peer != nil {
+		// Wait for boot timeout before joining cluster in HA mode
+		if bootManager != nil {
+			logger.Info("Waiting for boot timeout before joining cluster")
+			ctx, cancel := context.WithTimeout(context.Background(), *clusterBootTimeout+10*time.Second)
+			if err := bootManager.WaitReady(ctx); err != nil {
+				logger.Warn("boot timeout interrupted", "err", err)
+			}
+			cancel()
+		}
+
 		err = peer.Join(
 			*reconnectInterval,
 			*peerReconnectTimeout,
@@ -362,8 +378,13 @@ func run() int {
 	// Therefore we explicly pass an empty interface, to detect if the
 	// cluster is not enabled in notify.
 	var clusterPeer cluster.ClusterPeer
+	var statusProvider api.StatusProvider
 	if peer != nil {
 		clusterPeer = peer
+		if bootManager != nil {
+			// Use the same readiness checker as status provider for API
+			statusProvider = cluster.NewCompositeReadinessChecker(bootManager, peer)
+		}
 	}
 
 	api, err := api.New(api.Options{
@@ -372,6 +393,7 @@ func run() int {
 		AlertStatusFunc: marker.Status,
 		GroupMutedFunc:  marker.Muted,
 		Peer:            clusterPeer,
+		StatusProvider:  statusProvider,
 		Timeout:         *httpTimeout,
 		Concurrency:     *getConcurrency,
 		Logger:          logger.With("component", "api"),
@@ -546,7 +568,15 @@ func run() int {
 
 	webReload := make(chan chan error)
 
-	ui.Register(router, webReload, logger)
+	// Create readiness checker for UI
+	if bootManager != nil {
+		// HA mode: use composite checker that considers boot timeout and cluster readiness
+		readinessChecker := cluster.NewCompositeReadinessChecker(bootManager, peer)
+		ui.RegisterWithReadiness(router, webReload, logger, readinessChecker)
+	} else {
+		// Single replica mode: use default register (always ready)
+		ui.Register(router, webReload, logger)
+	}
 	reactapp.Register(router, logger)
 
 	mux := api.Register(router, *routePrefix)

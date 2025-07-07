@@ -46,6 +46,11 @@ type API struct {
 	inFlightSem              chan struct{}
 }
 
+// StatusProvider provides enhanced cluster status information.
+type StatusProvider interface {
+	Status() string
+}
+
 // Options for the creation of an API object. Alerts, Silences, AlertStatusFunc
 // and GroupMutedFunc are mandatory. The zero value for everything else is a safe
 // default.
@@ -62,6 +67,9 @@ type Options struct {
 	GroupMutedFunc func(routeID, groupKey string) ([]string, bool)
 	// Peer from the gossip cluster. If nil, no clustering will be used.
 	Peer cluster.ClusterPeer
+	// StatusProvider provides enhanced status information including boot state.
+	// If nil, standard peer status will be used.
+	StatusProvider StatusProvider
 	// Timeout for all HTTP connections. The zero value (and negative
 	// values) result in no timeout.
 	Timeout time.Duration
@@ -125,6 +133,7 @@ func New(opts Options) (*API, error) {
 		opts.GroupMutedFunc,
 		opts.Silences,
 		opts.Peer,
+		opts.StatusProvider,
 		l.With("version", "v2"),
 		opts.Registry,
 	)

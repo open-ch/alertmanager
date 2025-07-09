@@ -16,9 +16,12 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"sync"
 	"time"
 
+	jsoniter "github.com/json-iterator/go"
 	"github.com/prometheus/common/model"
 
 	"github.com/prometheus/alertmanager/types"
@@ -45,6 +48,38 @@ func NewAlerts() *Alerts {
 	}
 
 	return a
+}
+
+func (a *Alerts) PersistAlerts(alertPersistenceFilePath string) error {
+	a.Lock()
+	defer a.Unlock()
+
+	data, err := jsoniter.Marshal(a.c)
+	if err != nil {
+		return fmt.Errorf("error marshalling alerts to persistence file %s: %w", alertPersistenceFilePath, err)
+	}
+
+	if err := os.WriteFile(alertPersistenceFilePath, data, 0o644); err != nil {
+		return fmt.Errorf("error writing alerts to persistence file %s: %w", alertPersistenceFilePath, err)
+	}
+
+	return nil
+}
+
+func (a *Alerts) LoadAlerts(alertPersistenceFilePath string) error {
+	a.Lock()
+	defer a.Unlock()
+
+	data, err := os.ReadFile(alertPersistenceFilePath)
+	if err != nil {
+		return fmt.Errorf("error reading alert persistence file %s: %w", alertPersistenceFilePath, err)
+	}
+
+	if err := jsoniter.Unmarshal(data, &a.c); err != nil {
+		return fmt.Errorf("error unmarshalling alerts from persistence file %s: %w", alertPersistenceFilePath, err)
+	}
+
+	return nil
 }
 
 // SetGCCallback sets a GC callback to be executed after each GC.

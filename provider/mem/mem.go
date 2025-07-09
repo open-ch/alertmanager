@@ -110,17 +110,18 @@ func NewAlerts(ctx context.Context, m types.AlertMarker, intervalGC time.Duratio
 	return a, nil
 }
 
-func (a *Alerts) GetAlerts() *store.Alerts {
+func (a *Alerts) PersistAlerts(alertPersistenceFilePath string) error {
 	a.mtx.Lock()
 	defer a.mtx.Unlock()
 
-	return a.alerts
+	return a.alerts.PersistAlerts(alertPersistenceFilePath)
 }
 
-func (a *Alerts) SetAlerts(alerts *store.Alerts) {
+func (a *Alerts) LoadAlerts(alertPersistenceFilePath string) error {
 	a.mtx.Lock()
-	a.alerts = alerts
-	a.mtx.Unlock()
+	defer a.mtx.Unlock()
+
+	return a.alerts.LoadAlerts(alertPersistenceFilePath)
 }
 
 func (a *Alerts) gcLoop(ctx context.Context, interval time.Duration) {

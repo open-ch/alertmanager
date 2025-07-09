@@ -32,6 +32,7 @@ import (
 
 	"github.com/KimMachineGun/automemlimit/memlimit"
 	"github.com/alecthomas/kingpin/v2"
+	jsoniter "github.com/json-iterator/go"
 	"github.com/prometheus/client_golang/prometheus"
 	versioncollector "github.com/prometheus/client_golang/prometheus/collectors/version"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -56,6 +57,7 @@ import (
 	"github.com/prometheus/alertmanager/notify"
 	"github.com/prometheus/alertmanager/provider/mem"
 	"github.com/prometheus/alertmanager/silence"
+	"github.com/prometheus/alertmanager/store"
 	"github.com/prometheus/alertmanager/template"
 	"github.com/prometheus/alertmanager/timeinterval"
 	"github.com/prometheus/alertmanager/types"
@@ -177,6 +179,8 @@ func run() int {
 		allowInsecureAdvertise = kingpin.Flag("cluster.allow-insecure-public-advertise-address-discovery", "[EXPERIMENTAL] Allow alertmanager to discover and listen on a public IP address.").Bool()
 		label                  = kingpin.Flag("cluster.label", "The cluster label is an optional string to include on each packet and stream. It uniquely identifies the cluster and prevents cross-communication issues when sending gossip messages.").Default("").String()
 		featureFlags           = kingpin.Flag("enable-feature", fmt.Sprintf("Comma-separated experimental features to enable. Valid options: %s", strings.Join(featurecontrol.AllowedFlags, ", "))).Default("").String()
+
+		alertPersistenceFile = kingpin.Flag("storage.alert-persistence-file", "Alert persistence filename (in the base folder). If set, Alertmanager will persist alerts to this file on shutdown and restore them on startup.").Default("persisted-alerts.json").String()
 	)
 
 	promslogflag.AddFlags(kingpin.CommandLine, &promslogConfig)
@@ -347,7 +351,32 @@ func run() int {
 		logger.Error("error creating memory provider", "err", err)
 		return 1
 	}
-	defer alerts.Close()
+
+	// if alertPersistenceFile is set, we will use it to load persisted alerts
+	alertPersistenceFilePath := ""
+	if *alertPersistenceFile != "" {
+		alertPersistenceFilePath = filepath.Join(*dataDir, *alertPersistenceFile)
+	}
+
+	defer func() {
+		// if alertPersistenceFile is set, persist alerts
+		if alertPersistenceFilePath != "" {
+			alertsToWrite := alerts.GetAlerts()
+			if err := persistAlerts(alertPersistenceFilePath, alertsToWrite); err != nil {
+				logger.Error("error persisting alerts", "file", alertPersistenceFilePath, "err", err)
+			}
+			logger.Info("persisted alerts to file", "file", alertPersistenceFilePath)
+		}
+		alerts.Close()
+	}()
+
+	// if alertPersistenceFile is set, we will use it to load persisted alerts
+	if alertPersistenceFilePath != "" {
+		if err := loadAlerts(alertPersistenceFilePath, alerts); err != nil {
+			logger.Error("error loading persisted alerts", "file", alertPersistenceFilePath, "err", err)
+		}
+		logger.Info("loaded alerts from file", "file", alertPersistenceFilePath)
+	}
 
 	var disp *dispatch.Dispatcher
 	defer func() {
@@ -587,6 +616,34 @@ func run() int {
 			return 1
 		}
 	}
+}
+
+func persistAlerts(alertPersistenceFilePath string, alertsToWrite *store.Alerts) error {
+	data, err := jsoniter.Marshal(alertsToWrite)
+	if err != nil {
+		return fmt.Errorf("error marshalling alerts to persistence file %s: %w", alertPersistenceFilePath, err)
+	}
+
+	if err := os.WriteFile(alertPersistenceFilePath, data, 0o644); err != nil {
+		return fmt.Errorf("error writing alerts to persistence file %s: %w", alertPersistenceFilePath, err)
+	}
+
+	return nil
+}
+
+func loadAlerts(alertPersistenceFilePath string, alerts *mem.Alerts) error {
+	data, err := os.ReadFile(alertPersistenceFilePath)
+	if err != nil {
+		return fmt.Errorf("error reading alert persistence file %s: %w", alertPersistenceFilePath, err)
+	}
+
+	readAlerts := new(store.Alerts)
+	if err := jsoniter.Unmarshal(data, readAlerts); err != nil {
+		return fmt.Errorf("error unmarshalling alerts from persistence file %s: %w", alertPersistenceFilePath, err)
+	}
+
+	alerts.SetAlerts(readAlerts)
+	return nil
 }
 
 // clusterWait returns a function that inspects the current peer state and returns

@@ -110,6 +110,19 @@ func NewAlerts(ctx context.Context, m types.AlertMarker, intervalGC time.Duratio
 	return a, nil
 }
 
+func (a *Alerts) GetAlerts() *store.Alerts {
+	a.mtx.Lock()
+	defer a.mtx.Unlock()
+
+	return a.alerts
+}
+
+func (a *Alerts) SetAlerts(alerts *store.Alerts) {
+	a.mtx.Lock()
+	a.alerts = alerts
+	a.mtx.Unlock()
+}
+
 func (a *Alerts) gcLoop(ctx context.Context, interval time.Duration) {
 	t := time.NewTicker(interval)
 	defer t.Stop()

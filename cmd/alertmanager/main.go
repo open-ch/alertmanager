@@ -371,10 +371,11 @@ func run() int {
 
 	// if alertPersistenceFile is set, we will use it to load persisted alerts
 	if alertPersistenceFilePath != "" {
+		loadStart := time.Now()
 		if err := alerts.LoadAlerts(alertPersistenceFilePath); err != nil {
 			logger.Error("error loading persisted alerts", "file", alertPersistenceFilePath, "err", err)
 		} else {
-			logger.Info("loaded alerts from file", "file", alertPersistenceFilePath)
+			logger.Info("loaded alerts from file", "file", alertPersistenceFilePath, "duration", time.Since(loadStart))
 		}
 	}
 

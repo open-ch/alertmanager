@@ -357,22 +357,25 @@ func run() int {
 	}
 
 	defer func() {
+		defer alerts.Close()
+
 		// if alertPersistenceFile is set, persist alerts
 		if alertPersistenceFilePath != "" {
 			if err := alerts.PersistAlerts(alertPersistenceFilePath); err != nil {
 				logger.Error("error persisting alerts", "file", alertPersistenceFilePath, "err", err)
+				return
 			}
 			logger.Info("persisted alerts to file", "file", alertPersistenceFilePath)
 		}
-		alerts.Close()
 	}()
 
 	// if alertPersistenceFile is set, we will use it to load persisted alerts
 	if alertPersistenceFilePath != "" {
 		if err := alerts.LoadAlerts(alertPersistenceFilePath); err != nil {
 			logger.Error("error loading persisted alerts", "file", alertPersistenceFilePath, "err", err)
+		} else {
+			logger.Info("loaded alerts from file", "file", alertPersistenceFilePath)
 		}
-		logger.Info("loaded alerts from file", "file", alertPersistenceFilePath)
 	}
 
 	var disp *dispatch.Dispatcher

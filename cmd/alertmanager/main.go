@@ -178,7 +178,7 @@ func run() int {
 		label                  = kingpin.Flag("cluster.label", "The cluster label is an optional string to include on each packet and stream. It uniquely identifies the cluster and prevents cross-communication issues when sending gossip messages.").Default("").String()
 		featureFlags           = kingpin.Flag("enable-feature", fmt.Sprintf("Comma-separated experimental features to enable. Valid options: %s", strings.Join(featurecontrol.AllowedFlags, ", "))).Default("").String()
 
-		alertPersistenceFile = kingpin.Flag("storage.alert-persistence-file", "Alert persistence filename (in the base folder). If set, Alertmanager will persist alerts to this file on shutdown and restore them on startup.").Default("persisted-alerts.json").String()
+		alertPersistenceFile = kingpin.Flag("storage.alert-persistence-file", "Alert persistence filename (in the base folder). If set, Alertmanager will persist alerts to this file on shutdown and restore them on startup.").Default("persisted-alerts.json.gz").String()
 	)
 
 	promslogflag.AddFlags(kingpin.CommandLine, &promslogConfig)

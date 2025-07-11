@@ -14,9 +14,11 @@
 package store
 
 import (
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sync"
 	"time"
@@ -59,8 +61,20 @@ func (a *Alerts) PersistAlerts(alertPersistenceFilePath string) error {
 		return fmt.Errorf("error marshalling alerts to persistence file %s: %w", alertPersistenceFilePath, err)
 	}
 
-	if err := os.WriteFile(alertPersistenceFilePath, data, 0o644); err != nil {
-		return fmt.Errorf("error writing alerts to persistence file %s: %w", alertPersistenceFilePath, err)
+	// Create the file
+	file, err := os.OpenFile(alertPersistenceFilePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return fmt.Errorf("error creating persistence file %s: %w", alertPersistenceFilePath, err)
+	}
+	defer file.Close()
+
+	// Write compressed data
+	gzipWriter := gzip.NewWriter(file)
+	if _, err := gzipWriter.Write(data); err != nil {
+		return fmt.Errorf("error writing compressed alerts to persistence file %s: %w", alertPersistenceFilePath, err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		return fmt.Errorf("error closing gzip writer for persistence file %s: %w", alertPersistenceFilePath, err)
 	}
 
 	return nil
@@ -70,9 +84,26 @@ func (a *Alerts) LoadAlerts(alertPersistenceFilePath string) error {
 	a.Lock()
 	defer a.Unlock()
 
-	data, err := os.ReadFile(alertPersistenceFilePath)
+	// Open the file
+	file, err := os.Open(alertPersistenceFilePath)
 	if err != nil {
-		return fmt.Errorf("error reading alert persistence file %s: %w", alertPersistenceFilePath, err)
+		return fmt.Errorf("error opening alert persistence file %s: %w", alertPersistenceFilePath, err)
+	}
+	defer file.Close()
+
+	// Create gzip reader
+	gzipReader, err := gzip.NewReader(file)
+	if err != nil {
+		return fmt.Errorf("error creating gzip reader for persistence file %s: %w", alertPersistenceFilePath, err)
+	}
+
+	// Read decompressed data
+	data, err := io.ReadAll(gzipReader)
+	if err != nil {
+		return fmt.Errorf("error reading decompressed data from persistence file %s: %w", alertPersistenceFilePath, err)
+	}
+	if err := gzipReader.Close(); err != nil {
+		return fmt.Errorf("error closing gzip reader for persistence file %s: %w", alertPersistenceFilePath, err)
 	}
 
 	if err := jsoniter.Unmarshal(data, &a.c); err != nil {

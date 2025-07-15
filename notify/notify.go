@@ -943,6 +943,7 @@ func (n SetNotifiesStage) Exec(ctx context.Context, l *slog.Logger, alerts ...*t
 			alert.Annotations = model.LabelSet{}
 		}
 		alert.Annotations["repeat_interval"] = model.LabelValue(repeat.String())
+		l.Info("Set repeat_interval annotation", "annotations", alert.Annotations)
 	}
 
 	return ctx, alerts, n.nflog.Log(n.recv, gkey, firing, resolved, expiry)

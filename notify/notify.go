@@ -936,16 +936,6 @@ func (n SetNotifiesStage) Exec(ctx context.Context, l *slog.Logger, alerts ...*t
 	}
 	expiry := 2 * repeat
 
-	// store the configured repeat interval in the alert annotations
-	// so that it can be used by alert-handler to deduplicate alerts / notifications
-	for _, alert := range alerts {
-		if alert.Annotations == nil {
-			alert.Annotations = model.LabelSet{}
-		}
-		alert.Annotations["repeat_interval"] = model.LabelValue(repeat.String())
-		l.Info("Set repeat_interval annotation", "annotations", alert.Annotations)
-	}
-
 	return ctx, alerts, n.nflog.Log(n.recv, gkey, firing, resolved, expiry)
 }
 

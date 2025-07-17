@@ -342,6 +342,14 @@ func (d *Dispatcher) processAlert(alert *types.Alert, route *Route) {
 	d.aggrGroupsNum++
 	d.metrics.aggrGroups.Inc()
 
+	// store the configured repeat interval in the alert annotations
+	// so that it can be used by alert-handler to deduplicate alerts / notifications
+	if alert.Annotations == nil {
+		alert.Annotations = model.LabelSet{}
+	}
+	alert.Annotations["repeat_interval"] = model.LabelValue(route.RouteOpts.RepeatInterval.String())
+	d.logger.Info("Set repeat_interval annotation", "alert", alert.Name(), "annotations", alert.Annotations)
+
 	// Insert the 1st alert in the group before starting the group's run()
 	// function, to make sure that when the run() will be executed the 1st
 	// alert is already there.

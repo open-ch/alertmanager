@@ -318,6 +318,14 @@ func (d *Dispatcher) processAlert(alert *types.Alert, route *Route) {
 	d.mtx.Lock()
 	defer d.mtx.Unlock()
 
+	// store the configured repeat interval in the alert annotations
+	// so that it can be used by alert-handler to deduplicate alerts / notifications
+	if alert.Annotations == nil {
+		alert.Annotations = model.LabelSet{}
+	}
+	d.logger.Info("Storing repeat interval in alert annotations", "alert_name", alert.Name(), "repeat_interval", route.RouteOpts.RepeatInterval.String())
+	alert.Annotations["repeat_interval"] = model.LabelValue(route.RouteOpts.RepeatInterval.String())
+
 	routeGroups, ok := d.aggrGroupsPerRoute[route]
 	if !ok {
 		routeGroups = map[model.Fingerprint]*aggrGroup{}
@@ -341,13 +349,6 @@ func (d *Dispatcher) processAlert(alert *types.Alert, route *Route) {
 	routeGroups[fp] = ag
 	d.aggrGroupsNum++
 	d.metrics.aggrGroups.Inc()
-
-	// store the configured repeat interval in the alert annotations
-	// so that it can be used by alert-handler to deduplicate alerts / notifications
-	if alert.Annotations == nil {
-		alert.Annotations = model.LabelSet{}
-	}
-	alert.Annotations["repeat_interval"] = model.LabelValue(route.RouteOpts.RepeatInterval.String())
 
 	// Insert the 1st alert in the group before starting the group's run()
 	// function, to make sure that when the run() will be executed the 1st

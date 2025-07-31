@@ -110,6 +110,20 @@ func NewAlerts(ctx context.Context, m types.AlertMarker, intervalGC time.Duratio
 	return a, nil
 }
 
+func (a *Alerts) PersistAlerts(alertPersistenceFilePath string) error {
+	a.mtx.Lock()
+	defer a.mtx.Unlock()
+
+	return a.alerts.PersistAlerts(alertPersistenceFilePath)
+}
+
+func (a *Alerts) LoadAlerts(alertPersistenceFilePath string) error {
+	a.mtx.Lock()
+	defer a.mtx.Unlock()
+
+	return a.alerts.LoadAlerts(alertPersistenceFilePath)
+}
+
 func (a *Alerts) gcLoop(ctx context.Context, interval time.Duration) {
 	t := time.NewTicker(interval)
 	defer t.Stop()

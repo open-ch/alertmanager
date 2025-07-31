@@ -189,28 +189,18 @@ func TestAggrGroup(t *testing.T) {
 
 	ag.stop()
 
-	// Add an alert that started more than group_interval in the past. We expect
-	// immediate flushing.
-	// Finally, set all alerts to be resolved. After successful notify the aggregation group
-	// should empty itself.
+	// Set all alerts to be resolved. After successful notify the aggregation group
 	ag = newAggrGroup(context.Background(), lset, route, nil, promslog.NewNopLogger())
 	go ag.run(ntfy)
-
 	ag.insert(a1)
 	ag.insert(a2)
 
-	// a2 lies way in the past so the initial group_wait should be skipped.
-	select {
-	case <-time.After(opts.GroupWait / 2):
-		t.Fatalf("expected immediate alert but received none")
+	batch := <-alertsCh
+	exp := removeEndsAt(types.AlertSlice{a1, a2})
+	sort.Sort(batch)
 
-	case batch := <-alertsCh:
-		exp := removeEndsAt(types.AlertSlice{a1, a2})
-		sort.Sort(batch)
-
-		if !reflect.DeepEqual(batch, exp) {
-			t.Fatalf("expected alerts %v but got %v", exp, batch)
-		}
+	if !reflect.DeepEqual(batch, exp) {
+		t.Fatalf("expected alerts %v but got %v", exp, batch)
 	}
 
 	for i := 0; i < 3; i++ {
@@ -241,7 +231,7 @@ func TestAggrGroup(t *testing.T) {
 	a1r := *a1
 	a1r.EndsAt = time.Now()
 	ag.insert(&a1r)
-	exp := append(types.AlertSlice{&a1r}, removeEndsAt(types.AlertSlice{a2, a3})...)
+	exp = append(types.AlertSlice{&a1r}, removeEndsAt(types.AlertSlice{a2, a3})...)
 
 	select {
 	case <-time.After(2 * opts.GroupInterval):

@@ -318,6 +318,14 @@ func (d *Dispatcher) processAlert(alert *types.Alert, route *Route) {
 	d.mtx.Lock()
 	defer d.mtx.Unlock()
 
+	// store the configured repeat interval in the alert annotations
+	// so that it can be used by alert-handler to deduplicate alerts / notifications
+	if alert.Annotations == nil {
+		alert.Annotations = model.LabelSet{}
+	}
+	d.logger.Debug("Storing repeat interval in alert annotations", "alert_name", alert.Name(), "repeat_interval", route.RouteOpts.RepeatInterval.String())
+	alert.Annotations["repeat_interval"] = model.LabelValue(route.RouteOpts.RepeatInterval.String())
+
 	routeGroups, ok := d.aggrGroupsPerRoute[route]
 	if !ok {
 		routeGroups = map[model.Fingerprint]*aggrGroup{}
@@ -391,9 +399,6 @@ type aggrGroup struct {
 	done    chan struct{}
 	next    *time.Timer
 	timeout func(time.Duration) time.Duration
-
-	mtx        sync.RWMutex
-	hasFlushed bool
 }
 
 // newAggrGroup returns a new aggregation group.
@@ -460,10 +465,7 @@ func (ag *aggrGroup) run(nf notifyFunc) {
 			ctx = notify.WithRouteID(ctx, ag.routeID)
 
 			// Wait the configured interval before calling flush again.
-			ag.mtx.Lock()
 			ag.next.Reset(ag.opts.GroupInterval)
-			ag.hasFlushed = true
-			ag.mtx.Unlock()
 
 			ag.flush(func(alerts ...*types.Alert) bool {
 				return nf(ctx, alerts...)
@@ -488,14 +490,6 @@ func (ag *aggrGroup) stop() {
 func (ag *aggrGroup) insert(alert *types.Alert) {
 	if err := ag.alerts.Set(alert); err != nil {
 		ag.logger.Error("error on set alert", "err", err)
-	}
-
-	// Immediately trigger a flush if the wait duration for this
-	// alert is already over.
-	ag.mtx.Lock()
-	defer ag.mtx.Unlock()
-	if !ag.hasFlushed && alert.StartsAt.Add(ag.opts.GroupWait).Before(time.Now()) {
-		ag.next.Reset(0)
 	}
 }
 

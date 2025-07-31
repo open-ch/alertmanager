@@ -323,7 +323,7 @@ func (d *Dispatcher) processAlert(alert *types.Alert, route *Route) {
 	if alert.Annotations == nil {
 		alert.Annotations = model.LabelSet{}
 	}
-	d.logger.Info("Storing repeat interval in alert annotations", "alert_name", alert.Name(), "repeat_interval", route.RouteOpts.RepeatInterval.String())
+	d.logger.Debug("Storing repeat interval in alert annotations", "alert_name", alert.Name(), "repeat_interval", route.RouteOpts.RepeatInterval.String())
 	alert.Annotations["repeat_interval"] = model.LabelValue(route.RouteOpts.RepeatInterval.String())
 
 	routeGroups, ok := d.aggrGroupsPerRoute[route]
